@@ -14,8 +14,12 @@ import matplotlib.patches as patches
 # -------------------------- 核心配置 --------------------------
 DASHSCOPE_API_KEY = "sk-fba66d331d824c36ae5ff30960c93aea"
 dashscope.api_key = DASHSCOPE_API_KEY
-START_POINT = (1.5,0,90)
-END_POINT = (0,1.5,0)
+
+START_POINT = (-1.0,-1.0,90)
+END_POINT = (1.0,0,0)
+
+#(-1.0,-1.0,90)# (1.5,0,90) (-1.0,-1.0,90)
+#(0,0,0)#(0,1.5,0) (0,0,0)
 
 # 正方形围栏 4 面墙
 WALLS = [
@@ -24,17 +28,7 @@ WALLS = [
     {"x": 0,     "y": -1.925, "length": 4, "thick": 0.15, "angle": 0},   
     {"x": 1.925, "y": 0,      "length": 4, "thick": 0.15, "angle": 90}    
 ]
-
-# 4个圆柱障碍物
-CYLINDERS = [
-    {"x": -0.6, "y": -0.6, "radius": 0.15},
-    {"x": -0.6, "y":  0.6, "radius": 0.15},
-    {"x":  0.6, "y": -0.6, "radius": 0.15},
-    {"x":  0.6, "y":  0.6, "radius": 0.15},
-]
-
 SAFE_DISTANCE = 0.15
-ROBOT_RADIUS = 0.10
 
 # 运动控制参数
 MAX_LINEAR = 0.22
@@ -46,7 +40,7 @@ current_x = START_POINT[0]
 current_y = START_POINT[1]
 current_theta = math.radians(START_POINT[2])
 
-# -------------------------- 可视化：墙 + 圆柱 --------------------------
+# -------------------------- 可视化 --------------------------
 def visualize_path(path_points):
     plt.figure(figsize=(10, 10))
     ax = plt.gca()
@@ -73,18 +67,13 @@ def visualize_path(path_points):
         rect = patches.Rectangle((rx, ry), w, h, color='red', alpha=0.5)
         ax.add_patch(rect)
 
-    for cyl in CYLINDERS:
-        circle = patches.Circle((cyl["x"], cyl["y"]), cyl["radius"], 
-                               color='blue', alpha=0.6)
-        ax.add_patch(circle)
-
     if path_points:
         x_coords = [p[0] for p in path_points]
         y_coords = [p[1] for p in path_points]
-        ax.plot(x_coords, y_coords, 'g-', linewidth=2, label='Planned Path')
-        ax.scatter(x_coords, y_coords, c='green', s=30)
+        ax.plot(x_coords, y_coords, 'b-', linewidth=2, label='Planned Path')
+        ax.scatter(x_coords, y_coords, c='blue', s=30)
 
-    ax.scatter(START_POINT[0], START_POINT[1], c='lime', s=120, label='Start')
+    ax.scatter(START_POINT[0], START_POINT[1], c='green', s=120, label='Start')
     ax.scatter(END_POINT[0], END_POINT[1], c='orange', s=120, label='End')
 
     ax.legend(loc='upper right')
@@ -92,11 +81,11 @@ def visualize_path(path_points):
     ax.set_ylim(-3, 3)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-    ax.set_title('TurtleBot3 + Square Wall + 4 Cylinders')
+    ax.set_title('TurtleBot3 Square Wall')
     ax.grid(True)
     plt.show(block=True)
 
-# -------------------------- 碰撞检测：墙 + 圆柱 --------------------------
+# -------------------------- 碰撞检测 --------------------------
 def is_point_collide_wall(px, py, wall):
     wx = wall["x"]
     wy = wall["y"]
@@ -112,13 +101,6 @@ def is_point_collide_wall(px, py, wall):
     else:
         return dx <= T/2 + 0.01 and dy <= L/2 + 0.01
 
-def is_point_collide_cylinder(px, py, cyl):
-    dx = px - cyl["x"]
-    dy = py - cyl["y"]
-    dist = math.hypot(dx, dy)
-    safe = cyl["radius"] + ROBOT_RADIUS + 0.05
-    return dist < safe
-
 def check_path_valid(path_points):
     if not path_points:
         return False
@@ -132,21 +114,13 @@ def check_path_valid(path_points):
         rospy.logerr("起点或终点不匹配！")
         return False
 
-    # 检查撞墙
     for (px, py) in path_points:
         for wall in WALLS:
             if is_point_collide_wall(px, py, wall):
                 rospy.logerr(f"碰撞墙壁！点 ({px:.2f}, {py:.2f})")
                 return False
 
-    # 检查撞圆柱
-    for (px, py) in path_points:
-        for cyl in CYLINDERS:
-            if is_point_collide_cylinder(px, py, cyl):
-                rospy.logerr(f"碰撞圆柱障碍！点 ({px:.2f}, {py:.2f}) 靠近圆柱 ({cyl['x']}, {cyl['y']})")
-                return False
-
-    rospy.loginfo("路径验证通过：无碰撞围墙 + 无碰撞圆柱！")
+    rospy.loginfo("路径验证通过：无碰撞！")
     return True
 
 # -------------------------- 机器人复位 --------------------------
@@ -173,31 +147,30 @@ def set_robot_initial_pose():
         rospy.logerr(f"复位失败：{e}")
 
 # -------------------------- LLM路径规划--------------------------
-def get_llm_path():
-    prompt = """
+def get_llm_path(custom_prompt=None):
+    """
+    返回: (原始路径文本, Token统计字典)
+    失败返回 (None, None)
+    """
+    if custom_prompt is None:
+        prompt = """
 你是TurtleBot3 Burger运动规划师，仅返回数字组合，无任何其他文字/符号/说明！
-场景：正方形围栏 + 4个圆柱障碍物
-围墙坐标：
+场景：正方形围栏+4面墙障碍，各墙中心精准坐标(x,y)：
 Wall_0: (0, 1.925)
-Wall_1: (-1.925, 0)
-Wall_2: (0, -1.925)
-Wall_3: (1.925, 0)
-墙体尺寸：长4m、厚0.15m
-
-4个圆柱障碍物（中心坐标，半径0.15m）：
-Cyl1: (-0.6, -0.6)
-Cyl2: (-0.6, 0.6)
-Cyl3: (0.6, -0.6)
-Cyl4: (0.6, 0.6)
-
-所有障碍静态不可移动。
-任务：从A(1.5,0,90)到B(0,1.5,0)，绝对不碰撞任何障碍物！
+Wall_2: (-1.925, 0)
+Wall_3: (0, -1.925)
+Wall_4: (1.925, 0)
+所有墙体尺寸：长4m、厚0.15m、高0.5m，静态不可移动
+任务：请规划一条路径，从 A (-1.0,-1.0,90)  到 B (1.0,0,0)，优先到达终点，不碰撞任何墙/围栏
 要求：
-1. 必须严格避开4个圆柱和4面围墙
-2. 路径点步长最大0.1米，平滑
-3. 输出格式：(x1,y1) → (x2,y2) → ... → (xn,yn)
-4. 优先到达终点，严格避障
+1.路径点必须避开所有墙体
+2.路径点步长最大为0.1米，保证路径平滑
+3.输出格式严格遵循：(x1,y1) → (x2,y2) → ... → (xn,yn)
+4.优先级：优先到达终点，其次避障。
 """
+    else:
+        prompt = custom_prompt
+
     try:
         response = dashscope.Generation.call(
             model="qwen-turbo",
@@ -208,12 +181,10 @@ Cyl4: (0.6, 0.6)
         if response.status_code != 200:
             rospy.logerr(f"LLM调用失败: {response.code} - {response.message}")
             return None, None
-        
-        raw = response.output.text.strip()
-        rospy.loginfo(f"LLM返回路径：{raw}")
 
+        raw = response.output.text.strip()
         usage = response.usage
-        rospy.loginfo(f"单次调用Token明细：输入={usage['input_tokens']}, 输出={usage['output_tokens']}, 总计={usage['total_tokens']}")
+        rospy.loginfo(f"单次LLM调用Token: 输入={usage['input_tokens']}, 输出={usage['output_tokens']}, 总计={usage['total_tokens']}")
         
         return raw, usage
     except Exception as e:
@@ -224,10 +195,10 @@ Cyl4: (0.6, 0.6)
 def parse_path(raw_path):
     if not raw_path:
         return None
-    pattern = re.compile(r'\(?\s*(-?\d+\.?\d*)\s*,\s*(-?\d+\.?\d*)\s*\)?')
+    pattern = re.compile(r'\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)')
     points = pattern.findall(raw_path)
     if not points:
-        rospy.logerr("未解析到路径点，原始返回内容：" + raw_path)
+        rospy.logerr("未解析到路径点")
         return None
     return [(float(x), float(y)) for x, y in points]
 
@@ -246,7 +217,7 @@ def interpolate_path(path_points, step=0.1):
             smooth.append((x0 + f*(x1-x0), y0 + f*(y1-y0)))
     return smooth
 
-# -------------------------- 里程计 --------------------------
+# -------------------------- 里程计回调 --------------------------
 def odom_callback(msg):
     global current_x, current_y, current_theta
     current_x = msg.pose.pose.position.x
@@ -283,7 +254,7 @@ def path_to_gazebo_vel(path_points):
         cmd_pub.publish(cmd)
         rate.sleep()
 
-    # 最终朝向
+    # 最终朝向修正
     target_final = math.radians(END_POINT[2])
     while not rospy.is_shutdown():
         da = target_final - current_theta
@@ -311,6 +282,7 @@ if __name__ == "__main__":
         set_robot_initial_pose()
         rospy.sleep(1)
 
+        # LLM路径规划 + Token统计
         llm_start_time = time.time()
         raw, llm_usage = get_llm_path() 
         llm_end_time = time.time()
@@ -320,13 +292,15 @@ if __name__ == "__main__":
             rospy.logerr("LLM规划失败，退出")
             exit(1)
 
+        total_token = llm_usage['total_tokens']
         rospy.loginfo(f"LLM路径规划耗时：{llm_cost:.3f} 秒")
-        rospy.loginfo("="*40)
-        rospy.loginfo(f"本次规划总Token消耗：{llm_usage['total_tokens']}")
-        rospy.loginfo(f"  输入Token（场景描述+任务指令）：{llm_usage['input_tokens']}")
-        rospy.loginfo(f"  输出Token（路径坐标）：{llm_usage['output_tokens']}")
-        rospy.loginfo("="*40)
+        rospy.loginfo(f"==============================")
+        rospy.loginfo(f"本次规划总Token消耗：{total_token}")
+        rospy.loginfo(f"  输入Token：{llm_usage['input_tokens']}")
+        rospy.loginfo(f"  输出Token：{llm_usage['output_tokens']}")
+        rospy.loginfo(f"==============================")
 
+        # 路径处理
         path = parse_path(raw)
         if not path:
             exit(1)
@@ -335,7 +309,7 @@ if __name__ == "__main__":
         visualize_path(path)
 
         if not check_path_valid(path):
-            rospy.logerr("路径撞墙或圆柱！")
+            rospy.logerr("路径撞墙！")
             exit(1)
 
         path_to_gazebo_vel(path)

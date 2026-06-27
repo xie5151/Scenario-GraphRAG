@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-import dashscope
 import re
 import math
 import time
@@ -14,18 +13,18 @@ import matplotlib.patches as patches
 
 # -------------------------- 核心配置 --------------------------
 DASHSCOPE_API_KEY = "sk-fba66d331d824c36ae5ff30960c93aea"
-dashscope.api_key = DASHSCOPE_API_KEY
 
-START_POINT = (1.5,0,90)  #(-1.0,1.0,90)            (1.5,0,90)
-END_POINT =  (-1.0,-1.5,180)  #(0.5,0,0)                 (-1.0,-1.5,180)
-# 正方形围栏 4 面墙（真实结构：中心x, 中心y, 长度, 厚度, 旋转角度）
+START_POINT = (-1.0,1.0,90)
+END_POINT = (0.5,0,0)
+
+# 正方形围栏 4 面墙
 WALLS = [
     {"x": 0,     "y": 1.925,  "length": 4, "thick": 0.15, "angle": 0},    
     {"x": -1.925,"y": 0,      "length": 4, "thick": 0.15, "angle": 90},    
     {"x": 0,     "y": -1.925, "length": 4, "thick": 0.15, "angle": 0},   
     {"x": 1.925, "y": 0,      "length": 4, "thick": 0.15, "angle": 90}    
 ]
-SAFE_DISTANCE = 0.15  # 避撞最小距离
+SAFE_DISTANCE = 0.15
 
 # 运动控制参数
 MAX_LINEAR = 0.22
@@ -37,13 +36,12 @@ current_x = START_POINT[0]
 current_y = START_POINT[1]
 current_theta = math.radians(START_POINT[2])
 
-# -------------------------- 可视化：画真实矩形墙 --------------------------
+# -------------------------- 可视化 --------------------------
 def visualize_path(path_points):
     plt.figure(figsize=(10, 10))
     ax = plt.gca()
     ax.set_aspect('equal', adjustable='box')
 
-    # 画 4 面真实矩形墙
     for wall in WALLS:
         x = wall["x"]
         y = wall["y"]
@@ -65,27 +63,25 @@ def visualize_path(path_points):
         rect = patches.Rectangle((rx, ry), w, h, color='red', alpha=0.5)
         ax.add_patch(rect)
 
-    # 画路径
     if path_points:
         x_coords = [p[0] for p in path_points]
         y_coords = [p[1] for p in path_points]
-        path_line, = ax.plot(x_coords, y_coords, 'b-', linewidth=2, label='Planned Path')
+        ax.plot(x_coords, y_coords, 'b-', linewidth=2, label='Planned Path')
         ax.scatter(x_coords, y_coords, c='blue', s=30)
 
-    # 起点终点
-    ax.scatter(START_POINT[0], START_POINT[1], c='green', s=120, label=f'Start ({START_POINT[0]}, {START_POINT[1]}, {START_POINT[2]}°)')
-    ax.scatter(END_POINT[0], END_POINT[1], c='orange', s=120, label=f'End ({END_POINT[0]}, {END_POINT[1]}, {END_POINT[2]}°)')
+    ax.scatter(START_POINT[0], START_POINT[1], c='green', s=120, label='Start')
+    ax.scatter(END_POINT[0], END_POINT[1], c='orange', s=120, label='End')
 
     ax.legend(loc='upper right')
     ax.set_xlim(-3, 3)
     ax.set_ylim(-3, 3)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
-    ax.set_title('TurtleBot3 Square Wall (Real Rectangle)')
+    ax.set_title('TurtleBot3 Square Wall')
     ax.grid(True)
     plt.show(block=True)
 
-# -------------------------- 真实矩形墙碰撞检测 --------------------------
+# -------------------------- 碰撞检测 --------------------------
 def is_point_collide_wall(px, py, wall):
     wx = wall["x"]
     wy = wall["y"]
@@ -142,8 +138,7 @@ def set_robot_initial_pose():
 
         resp = set_model_state(initial_state)
         if resp.success:
-            rospy.loginfo(f"机器人复位成功！")
-            rospy.loginfo(f"起点：({START_POINT[0]}, {START_POINT[1]})，朝向：{START_POINT[2]}°")
+            rospy.loginfo("机器人复位成功！")
     except Exception as e:
         rospy.logerr(f"复位失败：{e}")
 
@@ -157,7 +152,7 @@ Wall_2: (-1.925, 0)
 Wall_3: (0, -1.925)
 Wall_4: (1.925, 0)
 所有墙体尺寸：长4m、厚0.15m、高0.5m，静态不可移动
-任务：请规划一条路径，从 A  (1.5,0,90)到 B (-1.0,-1.5,180) ，优先到达终点，不碰撞任何墙/围栏
+任务：请规划一条路径，从 A(-1.0,1.0,90) 到 B (0.5,0,0)，优先到达终点，不碰撞任何墙/围栏
 要求：
 1.路径点必须避开所有墙体
 2.路径点步长最大为0.1米，保证路径平滑
@@ -166,21 +161,25 @@ Wall_4: (1.925, 0)
 """
     try:
         client = OpenAI(
-            api_key= dashscope.api_key,
+            api_key=DASHSCOPE_API_KEY,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1"
         )
         response = client.chat.completions.create(
             model="glm-5.1",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.1,
-            extra_body={"enable_thinking": True, "reasoning_effort": "high"}
+            extra_body={"enable_thinking": True}
         )
         raw = response.choices[0].message.content.strip()
-        rospy.loginfo(f"glm-5.1 返回路径：{raw}")
-        return raw
+        rospy.loginfo(f"GLM-5.1 返回路径：{raw}")
+
+        usage = response.usage
+        rospy.loginfo(f"单次调用Token明细：输入={usage.prompt_tokens}, 输出={usage.completion_tokens}, 总计={usage.total_tokens}")
+        
+        return raw, usage
     except Exception as e:
-        rospy.logerr(f"glm-5.1 调用错误：{e}")
-        return None
+        rospy.logerr(f"GLM-5.1 调用错误：{e}")
+        return None, None
 
 # -------------------------- 路径解析 --------------------------
 def parse_path(raw_path):
@@ -273,15 +272,22 @@ if __name__ == "__main__":
         set_robot_initial_pose()
         rospy.sleep(1)
 
-        # LLM路径规划计时
+        # LLM路径规划计时 + Token统计
         llm_start_time = time.time()
-        raw = get_llm_path()
+        raw, llm_usage = get_llm_path()  
         llm_end_time = time.time()
         llm_cost = llm_end_time - llm_start_time
-        rospy.loginfo(f"LLM路径规划耗时：{llm_cost:.3f} 秒")
 
-        if not raw:
+        if not raw or not llm_usage:
+            rospy.logerr("LLM规划失败，退出")
             exit(1)
+
+        rospy.loginfo(f"LLM路径规划耗时：{llm_cost:.3f} 秒")
+        rospy.loginfo("="*40)
+        rospy.loginfo(f"本次规划总Token消耗：{llm_usage.total_tokens}")
+        rospy.loginfo(f"  输入Token（Prompt）：{llm_usage.prompt_tokens}")
+        rospy.loginfo(f"  输出Token（回答+思考）：{llm_usage.completion_tokens}")
+        rospy.loginfo("="*40)
 
         path = parse_path(raw)
         if not path:

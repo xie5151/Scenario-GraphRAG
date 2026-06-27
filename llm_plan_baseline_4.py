@@ -16,9 +16,8 @@ from matplotlib.patches import Circle
 DASHSCOPE_API_KEY = "sk-fba66d331d824c36ae5ff30960c93aea"
 dashscope.api_key = DASHSCOPE_API_KEY
 
-START_POINT =  (1.8,-1.0,0)   #(-2.0,-1.0,0)            (1.8,-1.0,0)
-END_POINT = (-2.2,-1.8,90) #(2.0,1.0,0)               (-2.2,-1.8,90)
-
+START_POINT =  (-2.0,-1.0,0)  #(-2.0,-1.0,0)            (1.8,-1.0,0)
+END_POINT = (2.0,1.0,0) #(2.0,1.0,0)               (-2.2,-1.8,90)
 # 长墙(5m)：Wall0/Wall2/Wall3/Wall4 | 短墙(1m)：其余8根
 WALLS = [
     # 长墙(5m)
@@ -37,13 +36,13 @@ WALLS = [
     {"name": "Wall21", "x": 0.204, "y": 0.215, "length": 1, "thick": 0.15, "angle": -math.pi/2},
 ]
 
-# 圆柱障碍物：匹配SDF中obstacle_1/2 (x,y,radius,height)
+# 圆柱障碍物
 CYLINDERS = [
     {"name": "obstacle_1", "x": 2.0, "y": 2.0, "radius": 0.12},
     {"name": "obstacle_2", "x": -2.0, "y": -2.0, "radius": 0.12},
 ]
 
-SAFE_DISTANCE = 0.05  # 避撞最小距离
+SAFE_DISTANCE = 0.05
 
 MAX_LINEAR = 0.22
 MAX_ANGULAR = 1.82
@@ -160,7 +159,7 @@ def set_robot_initial_pose():
     try:
         set_model_state = rospy.ServiceProxy('/gazebo/set_model_state', SetModelState)
         initial_state = ModelState()
-        initial_state.model_name = 'turtlebot3_burger'  # 匹配Gazebo中的机器人模型名
+        initial_state.model_name = 'turtlebot3_burger'
 
         # 位置复位
         initial_state.pose.position.x = START_POINT[0]
@@ -181,7 +180,7 @@ def set_robot_initial_pose():
     except Exception as e:
         rospy.logerr(f"机器人复位失败：{str(e)}")
 
-# -------------------------- LLM路径规划：适配实际场景 --------------------------
+# -------------------------- LLM路径规划 --------------------------
 def get_llm_path():
     prompt = f"""
 你是TurtleBot3 Burger专业运动规划师，严格遵循要求，仅返回路径点组合，无任何其他文字/符号/说明！
@@ -207,7 +206,7 @@ def get_llm_path():
 1. obstacle_1：中心坐标(2.0, 2.0)，半径0.12m
 2. obstacle_2：中心坐标(-2.0, -2.0)，半径0.12m
 
-任务：规划从起点A (1.8,-1.0,0) 到终点B (-2.2,-1.8,90)的平滑避障路径
+任务：规划从起点A (-2.0,-1.0,0)  到终点B (2.0,1.0,0)的平滑避障路径
 核心要求：
 1. 路径点必须避开所有墙体和圆柱，无任何碰撞，严格遵守安全距离0.2m
 2. 路径点步长最大0.1米，保证机器人运动平滑
@@ -218,19 +217,24 @@ def get_llm_path():
         response = dashscope.Generation.call(
             model="qwen-turbo",
             prompt=prompt,
-            temperature=0.1,  # 低温度保证规划稳定性
+            temperature=0.1,
             result_format="text",
             max_tokens=1024
         )
         if response.status_code != 200:
             rospy.logerr(f"LLM请求失败，状态码：{response.status_code}")
-            return None
+            return None, None
+        
         raw_path = response.output.text.strip()
         rospy.loginfo(f"LLM返回原始路径：{raw_path}")
-        return raw_path
+
+        usage = response.usage
+        rospy.loginfo(f"单次调用Token明细：输入={usage['input_tokens']}, 输出={usage['output_tokens']}, 总计={usage['total_tokens']}")
+        
+        return raw_path, usage
     except Exception as e:
         rospy.logerr(f"调用LLM出错：{str(e)}")
-        return None
+        return None, None
 
 # -------------------------- 路径解析与平滑 --------------------------
 def parse_path(raw_path):
@@ -317,8 +321,8 @@ def path_to_gazebo_vel(path_points):
         angle_diff = (angle_diff + math.pi) % (2 * math.pi) - math.pi
 
         # 速度控制：比例系数调节，限制最大速度
-        linear_vel = min(MAX_LINEAR, dist_to_target * 2)  # 距离越远，线速度越大
-        angular_vel = max(-MAX_ANGULAR, min(MAX_ANGULAR, angle_diff * 2.5))  # 角度差越大，角速度越大
+        linear_vel = min(MAX_LINEAR, dist_to_target * 2)
+        angular_vel = max(-MAX_ANGULAR, min(MAX_ANGULAR, angle_diff * 2.5))
 
         # 发布速度指令
         cmd = Twist()
@@ -355,7 +359,7 @@ if __name__ == "__main__":
     try:
         # 初始化ROS节点
         rospy.init_node("turtlebot3_plaza_path_planning", anonymous=True)
-        rospy.set_param('/use_sim_time', True)  # 使用仿真时间
+        rospy.set_param('/use_sim_time', True)
         rospy.loginfo("等待Gazebo场景加载完成...")
         rospy.sleep(START_WAIT_TIME)
 
@@ -363,15 +367,19 @@ if __name__ == "__main__":
         set_robot_initial_pose()
         rospy.sleep(1)
 
-        # 2. 调用LLM生成路径（计时，无论成功失败都输出耗时）
+        # 2. 调用LLM生成路径（计时+Token统计）
         llm_start_time = time.time()
-        raw_llm_path = get_llm_path()
+        raw_llm_path, llm_usage = get_llm_path()  
         llm_end_time = time.time()
         llm_cost = llm_end_time - llm_start_time
 
-        # 先打印耗时，再判断结果
-        if raw_llm_path:
+        if raw_llm_path and llm_usage:
             rospy.loginfo(f"LLM路径规划成功，耗时：{llm_cost:.3f} 秒")
+            rospy.loginfo("="*50)
+            rospy.loginfo(f"本次规划总Token消耗：{llm_usage['total_tokens']}")
+            rospy.loginfo(f"  输入Token（场景描述+任务指令）：{llm_usage['input_tokens']}")
+            rospy.loginfo(f"  输出Token（路径坐标）：{llm_usage['output_tokens']}")
+            rospy.loginfo("="*50)
         else:
             rospy.logerr(f"LLM路径规划失败，耗时：{llm_cost:.3f} 秒")
             rospy.logerr("LLM生成路径失败，程序退出")
